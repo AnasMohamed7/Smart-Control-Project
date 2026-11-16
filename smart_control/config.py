@@ -191,6 +191,17 @@ NN_CONFIG = {
     "bias_bound": 5.0,
 }
 
+# GeneticProgramming reads config.GP_SETTINGS automatically if it exists.
+GP_SETTINGS = {
+    "population_size": 30,   # same budget as GA / DE / PSO
+    "max_iterations": 100,
+    "random_seed": 42,
+    "tournament_size": 5,
+    "crossover_rate": 0.8,
+    "mutation_rate": 0.3,
+    "elite_count": 1,
+}
+
 # =============================================================================
 # Objective function weights
 # =============================================================================
