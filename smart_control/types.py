@@ -17,7 +17,7 @@ class SimulationResult:
     time: Any
     reference: Any
     output: Any
-    control_signal: Any
+    
 
 
 @dataclass
