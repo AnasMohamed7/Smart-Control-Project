@@ -27,10 +27,8 @@ third_order
 fourth_order
     G(s) = 1 / (s⁴ + 2.6s³ + 3.44s² + 2.4s + 0.64)
 
-    Two second-order sections in series:
-        (s² + 0.8s + 0.64)(s² + 1.8s + 1)
-    - Poles              : s = -0.4 ± j0.72  (ζ ≈ 0.49, ωn = 0.8 rad/s)
-                           s = -0.9 ± j0.436 (ζ ≈ 0.90, ωn = 1.0 rad/s)
+    - Poles              : s = -0.58 +/- j0.96, s = -0.80, s = -0.63
+                           (all real parts negative, so the plant is stable)
     - DC gain            : G(0) = 1/0.64 = 1.5625
 
 All poles have strictly negative real parts → all plants are BIBO stable.
@@ -91,14 +89,12 @@ def get_fourth_order_plant() -> control.TransferFunction:
     """Return the fourth-order plant transfer function.
 
     G(s) = 1 / (s⁴ + 2.6s³ + 3.44s² + 2.4s + 0.64)
-         = 1 / [(s² + 0.8s + 0.64)(s² + 1.8s + 1)]
 
     Mathematical properties
     -----------------------
-    - First pair  : s = -0.4 ± j0.72   (ζ ≈ 0.49, ωn = 0.8 rad/s)
-    - Second pair : s = -0.9 ± j0.436  (ζ = 0.90, ωn = 1.0 rad/s)
+    - Poles: s = -0.58 +/- j0.96, s = -0.80, s = -0.63 (all stable)
     - Steady-state gain = 1/0.64 ≈ 1.5625
-    - Mildly oscillatory due to the first complex pair
+    - Mildly oscillatory because of the complex pair
 
     Returns
     -------

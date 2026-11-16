@@ -23,7 +23,7 @@ import numpy as np
 from smart_control.types import PerformanceMetrics, SimulationResult
 
 # Numerical integration: prefer numpy.trapezoid (NumPy 2.0+), fall back to trapz
-_trapezoid = getattr(np, "trapezoid", np.trapz)
+_trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 
 
 def _to_1d_array(arr: Any, name: str = "array") -> np.ndarray:
