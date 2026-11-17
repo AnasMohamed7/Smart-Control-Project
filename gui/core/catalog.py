@@ -167,7 +167,7 @@ OPTIMIZER_INFO = {
         "strengths": "Fast early convergence, simple, and shares information across the whole swarm.",
         "steps": [("Initialise", "Random positions and velocities"),
                   ("Evaluate", "Update personal and global bests"),
-                  ("Move", "Inertia + cognitive + social pull (w = 0.7, c₁ = c₂ = 1.5)"),
+                  ("Move", "Inertia + cognitive + social pull (w decays 0.7 → 0.4, c₁ = c₂ = 1.5)"),
                   ("Clamp", "Velocity limited to 20 % of the range")],
     },
     "SA": {
