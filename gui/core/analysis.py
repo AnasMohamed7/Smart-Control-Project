@@ -84,17 +84,63 @@ def aggregate(df: pd.DataFrame, score_col: str = "fitness") -> pd.DataFrame:
     return agg
 
 
+def _rank_within(agg: pd.DataFrame, group: list[str], entity: str) -> pd.DataFrame:
+    """Rank ``entity`` by mean J inside each ``group`` cell (1 = best).
+
+    Cells with a single entry are skipped: with nobody to beat, a "rank 1" there
+    would be free. This matters because the GP optimiser only ever runs on the
+    GP controller — those cells would otherwise hand GP Controller free wins.
+    """
+    df = agg.copy()
+    if df.empty:
+        df["rank"] = []
+        return df
+    df = df[df.groupby(group, observed=True)[entity].transform("count") >= 2].copy()
+    df["rank"] = df.groupby(group, observed=True)["score_mean"].rank(method="min")
+    return df
+
+
 def optimizer_ranks(agg: pd.DataFrame) -> pd.DataFrame:
-    """Rank optimizers within each controller × plant cell (1 = best)."""
-    numeric = agg[agg["optimizer"].astype(str) != "GP"].copy()
-    numeric["rank"] = numeric.groupby(["controller", "plant"], observed=True)["score_mean"].rank(method="min")
-    return numeric
+    """Rank every optimiser — GP included — within each controller × plant cell."""
+    return _rank_within(agg, ["controller", "plant"], "optimizer")
 
 
 def controller_ranks(agg: pd.DataFrame) -> pd.DataFrame:
-    df = agg.copy()
-    df["rank"] = df.groupby(["optimizer", "plant"], observed=True)["score_mean"].rank(method="min")
-    return df
+    """Rank controllers within each optimiser × plant cell that has 2+ controllers."""
+    return _rank_within(agg, ["optimizer", "plant"], "controller")
+
+
+def rank_summary(ranks: pd.DataFrame, entity: str) -> pd.DataFrame:
+    """Mean rank and number of contested cells per entity, best first."""
+    if ranks.empty:
+        return pd.DataFrame(columns=["mean", "cells"])
+    out = ranks.groupby(entity, observed=True)["rank"].agg(mean="mean", cells="count")
+    out.index = out.index.astype(str)
+    return out.sort_values(["mean", "cells"], ascending=[True, False])
+
+
+def leaders(summary: pd.DataFrame, tol: float = 1e-9) -> list[str]:
+    """All entities tied for the best mean rank."""
+    if summary.empty:
+        return []
+    best = summary["mean"].min()
+    return [str(i) for i, v in summary["mean"].items() if abs(v - best) <= tol]
+
+
+def leader_text(summary: pd.DataFrame) -> tuple[str, str]:
+    """(value, note) for a 'top X' stat tile, handling ties and partial participation."""
+    top = leaders(summary)
+    if not top:
+        return "—", "no contested cells"
+    full = int(summary["cells"].max())
+    value = " = ".join(top)
+    note = f"average rank {summary.loc[top[0], 'mean']:.2f}"
+    if len(top) > 1:
+        note = "tied · " + note
+    partial = [t for t in top if int(summary.loc[t, "cells"]) < full]
+    if partial:
+        note += " · " + ", ".join(f"{t} ranked in {int(summary.loc[t, 'cells'])} of {full} cells" for t in partial)
+    return value, note
 
 
 def win_matrix(agg: pd.DataFrame, a: str, b: str) -> pd.DataFrame:

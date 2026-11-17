@@ -101,7 +101,7 @@ def _picks_mode() -> None:
             is_best = v is not None and best[k] is not None and math.isfinite(v) and v == best[k] and len(rows) > 1
             style = f"color:{T.TEXT};font-weight:800" if is_best else f"color:{T.TEXT_2}"
             mark = " ★" if is_best else ""
-            cells += f"<td style='text-align:right;padding:.5rem .8rem;{style};font-variant-numeric:tabular-nums'>{analysis.fmt(v)}{mark}</td>"
+            cells += f"<td style='text-align:right;padding:.5rem .8rem;{style};font-variant-numeric:tabular-nums;white-space:nowrap'>{analysis.fmt(v)}{mark}</td>"
         body += (f"<tr style='border-top:1px solid {T.BORDER}'><td style='padding:.5rem .8rem;color:{T.TEXT};white-space:nowrap'>"
                  f"<span class='sc-dot' style='background:{r['color']};margin-right:.5rem'></span><b>{T.esc(r['short'].split(' ')[0])}</b>&nbsp; {T.esc(r['name'])}</td>{cells}</tr>")
     st.markdown(f"<div style='overflow-x:auto;background:{T.SURFACE};border:1px solid {T.BORDER};border-radius:14px;"
@@ -125,11 +125,18 @@ def _duel_mode() -> None:
         return
     agg = analysis.aggregate(state.frame())
     c1, c2, _ = st.columns([1, 1, 2])
-    a = c1.selectbox("Optimiser A", ["DE", "GA", "PSO", "SA"], index=2, key="duel_a")
-    b = c2.selectbox("Optimiser B", [o for o in ["DE", "GA", "PSO", "SA"] if o != a], index=0, key="duel_b")
+    opts = [o for o in ["DE", "GA", "PSO", "SA", "GP"] if o in set(agg["optimizer"].astype(str))]
+    if len(opts) < 2:
+        state.no_data("a duel", "A duel needs at least two optimisers in the result set.")
+        return
+    a = c1.selectbox("Optimiser A", opts, index=opts.index("PSO") if "PSO" in opts else 0, key="duel_a")
+    rest = [o for o in opts if o != a]
+    b = c2.selectbox("Optimiser B", rest, index=rest.index("SA") if "SA" in rest else 0, key="duel_b")
+    if "GP" in (a, b):
+        st.caption("GP only drives the GP controller, so this duel is limited to the GP-controller cells.")
     wm = analysis.win_matrix(agg, a, b)
     if wm.empty:
-        st.info("No overlapping cells.")
+        state.no_data(f"{a} vs {b}", "These two optimisers were never run on the same controller and plant.")
         return
     wins_a, wins_b = int((wm["winner"] == a).sum()), int((wm["winner"] == b).sum())
     ties = int((wm["winner"] == "tie").sum())
@@ -150,7 +157,7 @@ def _duel_mode() -> None:
                                  hovertemplate=f"<b>{name}</b> · %{{y}}<br>mean J = %{{x:.4g}}<extra></extra>"))
     fig.update_layout(height=max(360, 34 * len(wm) + 80), title=f"Mean objective per cell — {a} vs {b} (left is better)",
                       xaxis_title="Mean objective J (log)")
-    fig.update_xaxes(type="log", dtick="D2")
+    charts.log_axis(fig, "x", list(wm[a]) + list(wm[b]))
     fig.update_yaxes(autorange="reversed", showline=False, ticks="")
     T.show(fig, key="duel_fig")
 

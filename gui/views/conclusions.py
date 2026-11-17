@@ -6,11 +6,31 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from gui import content
-from gui.core import analysis, state
+from gui.core import analysis, charts, state
 from gui.core import theme as T
 from gui.core.catalog import PLANT_LABELS, PLANT_NAMES
 
 CTRLS = ["PID", "Neural Network", "Fuzzy", "GP Controller"]
+
+
+def _rank_finding(summary, one: str, many: str, cells_label: str) -> tuple[str, str]:
+    """Finding text from a rank summary: names ties, and flags averages built on fewer cells."""
+    top = analysis.leaders(summary)
+    full = int(summary["cells"].max())
+    title = (f"{top[0]} is {one}" if len(top) == 1 else f"{' and '.join(top)} are tied as {many}")
+
+    def item(name):
+        n = int(summary.loc[name, "cells"])
+        return f"{name} {summary.loc[name, 'mean']:.2f}" + (f" ({n} of {full} cells)" if n < full else "")
+
+    rest = [i for i in summary.index if i not in top]
+    body = (f"Average rank {summary.loc[top[0], 'mean']:.2f} across the {cells_label} where it competed"
+            + (f" — then {', '.join(item(i) for i in rest)}." if rest else "."))
+    partial = [t for t in top if int(summary.loc[t, "cells"]) < full]
+    if partial:
+        body += (f" Note: {', '.join(partial)} only competed in {int(summary.loc[partial[0], 'cells'])} of {full} "
+                 "cells (the GP optimiser only drives the GP controller).")
+    return title, body
 
 
 def _budget_effect():
@@ -42,8 +62,8 @@ def render() -> None:
     if rs is not None:
         df = state.frame()
         agg = analysis.aggregate(df)
-        o_rank = analysis.optimizer_ranks(agg).groupby("optimizer", observed=True)["rank"].mean().sort_values()
-        c_rank = analysis.controller_ranks(agg).groupby("controller", observed=True)["rank"].mean().sort_values()
+        o_sum = analysis.rank_summary(analysis.optimizer_ranks(agg), "optimizer")
+        c_sum = analysis.rank_summary(analysis.controller_ranks(agg), "controller")
         ok = df[df["status"] == "success"]
         settled_by_plant = ok.groupby("plant", observed=True)["settled"].mean()
         settled_by_ctrl = ok.groupby("controller", observed=True)["settled"].mean()
@@ -63,28 +83,29 @@ def render() -> None:
         T.card_grid(cards, min_width=240)
 
         findings = []
-        if not o_rank.empty:
-            findings.append((f"{o_rank.index[0]} is the most reliable tuner",
-                             f"Average rank {o_rank.iloc[0]:.2f} across all controller × plant cells "
-                             f"(then {', '.join(f'{k} {v:.2f}' for k, v in o_rank.iloc[1:].items())})."))
-        if not c_rank.empty:
-            findings.append((f"{c_rank.index[0]} is the strongest controller structure",
-                             f"Average rank {c_rank.iloc[0]:.2f}; it settles in "
-                             f"{settled_by_ctrl.get(c_rank.index[0], np.nan):.0%} of its runs."))
+        if not o_sum.empty:
+            findings.append(_rank_finding(o_sum, "the most reliable tuner", "the most reliable tuners",
+                                          "controller × plant cells"))
+        if not c_sum.empty:
+            title, body = _rank_finding(c_sum, "the strongest controller structure",
+                                        "the strongest controller structures", "optimiser × plant cells")
+            top = analysis.leaders(c_sum)
+            body += " Settled runs: " + ", ".join(f"{t} {settled_by_ctrl.get(t, np.nan):.0%}" for t in top) + "."
+            findings.append((title, body))
         if len(settled_by_plant) > 1:
             hardest = settled_by_plant.idxmin()
             findings.append((f"The {PLANT_LABELS[str(hardest)]} plant is the hardest",
                              f"Only {settled_by_plant.min():.0%} of its runs settle, versus "
                              f"{settled_by_plant.max():.0%} on the {PLANT_LABELS[str(settled_by_plant.idxmax())]} plant — "
                              "more phase lag leaves less room for aggressive gains."))
-        if "Neural Network" in settled_by_ctrl:
+        if all(c in settled_by_ctrl for c in ("Neural Network", "PID", "Fuzzy")):
             findings.append(("Parameter count matters under a small budget",
                              f"The 21-weight neural network settles in {settled_by_ctrl['Neural Network']:.0%} of runs; "
                              f"3-parameter PID and Fuzzy settle in {settled_by_ctrl.get('PID', np.nan):.0%} and "
                              f"{settled_by_ctrl.get('Fuzzy', np.nan):.0%}."))
         if df["seed"].nunique() > 1:
             cv = (agg.assign(cv=agg["score_std"] / agg["score_mean"])
-                  .query("optimizer != 'GP'").groupby("optimizer", observed=True)["cv"].median().sort_values())
+                  .groupby("optimizer", observed=True)["cv"].median().dropna().sort_values())
             findings.append(("Results depend on the random seed",
                              f"Median coefficient of variation of J across seeds: "
                              + ", ".join(f"{k} {v:.0%}" for k, v in cv.items())
@@ -106,7 +127,7 @@ def render() -> None:
             fig.update_layout(height=380, xaxis_title="Objective evaluations per run (full-matrix result sets only)",
                               yaxis_title="Median J across optimisers & plants",
                               title="Median objective per controller vs evaluation budget (one point per saved result set)")
-            fig.update_yaxes(type="log", tickvals=[0.5, 1, 2, 5, 10, 20, 50, 100], minor=dict(showgrid=False))
+            charts.log_axis(fig, "y")
             fig.update_xaxes(type="log", tickvals=evs, ticktext=[str(e) for e in evs])
             T.show(fig, key="budget_effect")
 

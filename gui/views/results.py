@@ -57,7 +57,8 @@ def render() -> None:
     stat = c2.radio("Across seeds", ["Mean", "Best seed"], horizontal=True, key="res_stat",
                     disabled=df["seed"].nunique() < 2)
     # Only plants that exist in this result set are offered (key per set so stale picks never linger).
-    plants_sel = c3.multiselect("Plants", plants_avail, default=plants_avail, format_func=PLANT_LABELS.get,
+    plants_sel = c3.multiselect("Plants", plants_avail, default=plants_avail,
+                                format_func=lambda p: PLANT_LABELS[p].replace(" order", ""),
                                 key=f"res_plants_{rs.slug}")
     log = c4.toggle("Log colour scale", value=value in ("fitness", "overshoot", "iae", "steady_state_error"), key="res_log")
     if not plants_sel:
@@ -82,14 +83,16 @@ def render() -> None:
     ok = df_sel[df_sel["status"] == "success"]
     o_rank = analysis.optimizer_ranks(agg)
     c_rank = analysis.controller_ranks(agg)
-    best_opt = o_rank.groupby("optimizer", observed=True)["rank"].mean().idxmin() if not o_rank.empty else "—"
-    best_ctrl = c_rank.groupby("controller", observed=True)["rank"].mean().idxmin() if not c_rank.empty else "—"
+    o_sum = analysis.rank_summary(o_rank, "optimizer")
+    c_sum = analysis.rank_summary(c_rank, "controller")
+    best_opt, best_opt_note = analysis.leader_text(o_sum)
+    best_ctrl, best_ctrl_note = analysis.leader_text(c_sum)
     overall = agg.loc[agg["score_mean"].idxmin()]
     T.stat_tiles([
         ("Runs", f"{len(df_sel)}", f"{len(ok)} completed · {df['seed'].nunique()} seed(s)"),
         ("Settled", f"{ok['settled'].mean():.0%}", "of all responses"),
-        ("Top optimiser", str(best_opt), "lowest average rank"),
-        ("Top controller", str(best_ctrl), "lowest average rank"),
+        ("Top optimiser", best_opt, best_opt_note),
+        ("Top controller", best_ctrl, best_ctrl_note),
         ("Lowest J overall", analysis.fmt(overall["score_mean"]),
          f"{overall['optimizer']} · {overall['controller']} · {PLANT_LABELS[str(overall['plant'])]}"),
     ], min_width=170)
@@ -105,11 +108,19 @@ def render() -> None:
 
     c1, c2 = st.columns(2)
     with c1:
-        T.show(charts.rank_bars(o_rank, "optimizer", T.OPTIMIZER_COLORS,
-                                "Optimisers — average rank within each controller × plant"), key="res_orank")
+        if o_sum.empty:
+            state.no_data("an optimiser ranking", "Ranking needs at least two optimisers run on the same controller and plant.")
+        else:
+            T.show(charts.rank_bars(o_sum, T.OPTIMIZER_COLORS,
+                                    "Optimisers — average rank within each controller × plant"), key="res_orank")
     with c2:
-        T.show(charts.rank_bars(c_rank, "controller", T.CONTROLLER_COLORS,
-                                "Controllers — average rank within each optimiser × plant"), key="res_crank")
+        if c_sum.empty:
+            state.no_data("a controller ranking", "Ranking needs at least two controllers tuned by the same optimiser on the same plant.")
+        else:
+            T.show(charts.rank_bars(c_sum, T.CONTROLLER_COLORS,
+                                    "Controllers — average rank within each optimiser × plant"), key="res_crank")
+    st.caption("Ranks are only counted in cells with at least two competitors. The GP optimiser only drives the GP "
+               "controller, so its average comes from fewer cells — the bar label says how many.")
 
     tabs = st.tabs(["Step responses", "Convergence", "Seed spread", "Runtime", "Data table"])
     with tabs[0]:

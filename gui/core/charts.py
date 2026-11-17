@@ -14,6 +14,45 @@ from gui.core.catalog import PLANT_LABELS, metric_label
 Y_CLIP = (-0.6, 2.6)   # keep diverged responses from flattening every other trace
 
 
+def log_axis(fig: go.Figure, axis: str = "y", values=None) -> go.Figure:
+    """Log axis with readable 1-2-5 ticks (…, 10, 20, 50, 100, …) and full labels.
+
+    Plotly's compact log ticks print minor ticks as bare digits ("2" for 20), which
+    reads wrongly on slides; explicit tick values avoid that.
+    """
+    if values is None:
+        values = [v for tr in fig.data for v in (getattr(tr, axis) if getattr(tr, axis) is not None else [])]
+    vals = np.asarray([v for v in values if v is not None], dtype=float)
+    vals = vals[np.isfinite(vals) & (vals > 0)]
+    update = fig.update_yaxes if axis == "y" else fig.update_xaxes
+    if not vals.size:
+        update(type="log")
+        return fig
+    lo, hi = vals.min(), vals.max()
+    decades = range(int(math.floor(math.log10(lo))) - 1, int(math.ceil(math.log10(hi))) + 1)
+
+    def nice(mantissas, pad):
+        return [m * 10.0 ** k for k in decades for m in mantissas if lo / pad <= m * 10.0 ** k <= hi * pad]
+
+    ticks = nice((1, 2, 5), 1.6)
+    if len(ticks) > 9:                                   # wide ranges: decades only
+        ticks = [t for t in ticks if abs(math.log10(t) - round(math.log10(t))) < 1e-9]
+    for finer in ((1, 1.5, 2, 3, 5, 7), (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8)):
+        if sum(lo <= t <= hi for t in ticks) >= 3:
+            break
+        ticks = nice(finer, 1.0)                         # narrow ranges: finer nice steps, in range only
+    if sum(lo <= t <= hi for t in ticks) < 2:            # very narrow: evenly spaced rounded ticks
+        ticks = sorted({float(f"{t:.2g}") for t in np.geomspace(lo, hi, 4)})
+    update(type="log", tickvals=ticks, ticktext=[_short_tick(t) for t in ticks])
+    return fig
+
+
+def _short_tick(v: float) -> str:
+    if v >= 1000:
+        return f"{v / 1000:g}k"
+    return f"{v:g}"
+
+
 # ---------------------------------------------------------------------------
 # Time-domain responses
 # ---------------------------------------------------------------------------
@@ -141,7 +180,7 @@ def convergence_figure(traces: list[dict], title: str = "Convergence", height: i
     fig.update_layout(title=title, height=height, xaxis_title="Objective evaluations",
                       yaxis_title="Best objective J (lower is better)")
     if log:
-        fig.update_yaxes(type="log", dtick="D2")
+        log_axis(fig, "y")
     return fig
 
 
@@ -215,20 +254,27 @@ def _short(v: float) -> str:
     return f"{v:.2f}"
 
 
-def rank_bars(ranks: pd.DataFrame, by: str, colors: dict, title: str, height: int = 300) -> go.Figure:
-    summary = ranks.groupby(by, observed=True)["rank"].mean().sort_values()
+def rank_bars(summary: pd.DataFrame, colors: dict, title: str, height: int | None = None) -> go.Figure:
+    """Horizontal bars of mean rank (from ``analysis.rank_summary``); labels show how many
+    cells each average is based on, so a partial participant (GP) is read correctly."""
+    names = [str(i) for i in summary.index]
+    full = int(summary["cells"].max()) if len(summary) else 0
+    labels = [f"{m:.2f}" + (f"  ·  {int(c)} of {full} cells" if int(c) < full else "")
+              for m, c in zip(summary["mean"], summary["cells"])]
     fig = go.Figure(go.Bar(
-        x=summary.values, y=[str(i) for i in summary.index], orientation="h",
-        marker=dict(color=[colors.get(str(i), T.MUTED) for i in summary.index],
-                    cornerradius=4),
-        text=[f"{v:.2f}" for v in summary.values], textposition="outside",
-        textfont=dict(color=T.TEXT_2),
-        hovertemplate="<b>%{y}</b><br>average rank %{x:.2f}<extra></extra>",
+        x=summary["mean"], y=names, orientation="h",
+        marker=dict(color=[colors.get(n, T.MUTED) for n in names], cornerradius=4),
+        text=labels, textposition="outside", textfont=dict(color=T.TEXT_2), cliponaxis=False,
+        customdata=summary["cells"].astype(int),
+        hovertemplate="<b>%{y}</b><br>average rank %{x:.2f}<br>over %{customdata} contested cells<extra></extra>",
     ))
-    fig.update_layout(title=title, height=height, xaxis_title="Average rank (1 = best)",
-                      showlegend=False, bargap=0.35, margin=dict(l=22, r=22, t=56, b=52))
+    fig.update_layout(title=title, height=height or (110 + 46 * max(len(names), 1)),
+                      xaxis_title="Average rank (1 = best)", showlegend=False, bargap=0.35,
+                      margin=dict(l=22, r=22, t=56, b=52))
     fig.update_yaxes(autorange="reversed", showline=False, ticks="")
-    fig.update_xaxes(range=[0, max(summary.max() * 1.25, 1)])
+    top = max(float(summary["mean"].max()) if len(summary) else 1.0, 1.0)
+    has_note = any("cells" in l for l in labels)
+    fig.update_xaxes(range=[0, top * (1.55 if has_note else 1.22)], dtick=1)
     return fig
 
 
@@ -250,7 +296,7 @@ def seed_strip(df: pd.DataFrame, controller: str, plant: str, value: str = "fitn
     fig.update_layout(height=height, showlegend=False, yaxis_title=metric_label(value),
                       title=f"Spread across seeds — {controller} on {PLANT_LABELS.get(plant, plant)}")
     if log:
-        fig.update_yaxes(type="log", dtick="D2")
+        log_axis(fig, "y")
     return fig
 
 
@@ -357,8 +403,8 @@ def bode_figure(plants: dict, height: int = 460) -> go.Figure:
                                  hovertemplate=f"<b>{PLANT_LABELS[name]}</b><br>ω = %{{x:.3g}} rad/s<br>%{{y:.0f}}°<extra></extra>"),
                       row=2, col=1)
     fig.add_hline(y=-180, line=dict(color=T.BAD, width=1), row=2, col=1)
-    fig.update_xaxes(type="log", row=1, col=1)
-    fig.update_xaxes(type="log", title_text="Frequency ω (rad/s)", row=2, col=1)
+    log_axis(fig, "x", w)
+    fig.update_xaxes(title_text="Frequency ω (rad/s)", row=2, col=1)
     fig.update_layout(height=height, title="Bode diagram", hovermode="x unified")
     for ann in fig.layout.annotations:
         ann.font = dict(color=T.TEXT_2, size=12)
@@ -626,17 +672,29 @@ def landscape_figure(X, Y, Z, points: np.ndarray, best: np.ndarray, color: str, 
     return fig
 
 
-def robustness_figure(series: list[dict], metric: str, height: int = 380) -> go.Figure:
+def robustness_figure(series: list[dict], metric: str, what: str = "gain", log_y: bool = False,
+                      height: int = 380) -> go.Figure:
+    """Metric vs perturbation multiplier k on a log x-axis (so ×0.5 and ×2 sit symmetric around 1).
+
+    Plotly quirk on log axes (verified by rendering): *shapes* take data units (k = 1),
+    while *annotations* take log10 units (log10(1) = 0).
+    """
     fig = go.Figure()
-    fig.add_vline(x=1.0, line=dict(color=T.MUTED, width=1))
+    ks = sorted({float(k) for s in series for k in s["x"]})
+    fig.add_shape(type="line", xref="x", yref="paper", x0=1.0, x1=1.0, y0=0, y1=1,
+                  line=dict(color=T.MUTED, width=1), layer="below")
     for s in series:
         fig.add_trace(go.Scatter(
             x=s["x"], y=s["y"], name=s["name"], mode="lines+markers",
             line=dict(color=s["color"], width=2, dash=s.get("dash", "solid")),
             marker=dict(size=8, line=dict(color=T.SURFACE, width=1.5)),
-            hovertemplate=f"<b>{s['name']}</b><br>gain × %{{x:.2f}}<br>{metric_label(metric)} = %{{y:.4g}}<extra></extra>"))
-    fig.add_annotation(x=1.0, y=1.0, yref="paper", text="nominal", showarrow=False, yanchor="bottom",
-                       font=dict(color=T.MUTED, size=11))
-    fig.update_layout(height=height, xaxis_title="Plant gain multiplier", yaxis_title=metric_label(metric),
-                      title=f"{metric_label(metric, False)} as the plant gain drifts", hovermode="x unified")
+            hovertemplate=f"<b>{s['name']}</b><br>{what} × %{{x:.2f}}<br>{metric_label(metric)} = %{{y:.4g}}<extra></extra>"))
+    fig.add_annotation(x=0, xref="x", y=1.0, yref="paper", text="nominal model", showarrow=False,
+                       yanchor="top", xanchor="left", xshift=5, font=dict(color=T.MUTED, size=11))
+    fig.update_layout(height=height, xaxis_title=f"Plant {what} multiplier k (log scale)",
+                      yaxis_title=metric_label(metric),
+                      title=f"{metric_label(metric, False)} as the plant {what} drifts", hovermode="x unified")
+    fig.update_xaxes(type="log", tickvals=ks, ticktext=[f"{k:.2f}" for k in ks])
+    if log_y:
+        log_axis(fig, "y")
     return fig

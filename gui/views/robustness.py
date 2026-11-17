@@ -61,8 +61,15 @@ def render() -> None:
     plant = c1.selectbox("Nominal plant", plants_, index=plants_.index("third_order") if "third_order" in plants_ else 0,
                          format_func=PLANT_LABELS.get, key="rob_plant")
     kind = c2.selectbox("Perturbation", list(PERTURBATIONS), key="rob_kind")
-    lo, hi = c3.slider("Range of k", 0.3, 3.0, (0.5, 2.0), 0.1, key="rob_range")
-    st.caption(PERTURBATIONS[kind])
+    # One-sided slider: a bigger number always means a bigger (filled) drift. The tested
+    # multipliers are symmetric on a log scale: k from 1/(1+d) up to (1+d).
+    drift = c3.slider("Maximum drift (± %)", 10, 200, 100, 10, key="rob_drift",
+                      help="How far the real plant may differ from the model. 100 % means up to 2× smaller or 2× larger.")
+    hi = 1 + drift / 100
+    lo = 1 / hi
+    what = "gain" if kind == "Plant gain" else "speed"
+    st.caption(f"{PERTURBATIONS[kind]}  ·  testing k from **{lo:.2f}** to **{hi:.2f}** "
+               f"(plant {what} up to {hi:.2g}× smaller or larger than the model)")
 
     sub = agg[agg["plant"].astype(str) == plant].sort_values("score_mean")
     options = [f"{r.optimizer} · {r.controller}" for r in sub.itertuples()]
@@ -79,9 +86,9 @@ def render() -> None:
         st.info("Pick at least one controller.")
         return
 
-    factors = tuple(np.round(np.linspace(lo, hi, 9), 3))
-    if not any(abs(f - 1.0) < 1e-9 for f in factors):
-        factors = tuple(sorted(factors + (1.0,)))
+    # 9 log-spaced points: symmetric around k = 1, which is always the exact middle point.
+    factors = tuple(float(f) for f in np.round(np.geomspace(lo, hi, 9), 4))
+    factors = tuple(1.0 if abs(f - 1.0) < 1e-6 else f for f in factors)
     series, extremes = [], []
     with st.spinner("Re-simulating on perturbed plants…"):
         for i, pick in enumerate(picks):
@@ -98,9 +105,7 @@ def render() -> None:
             extremes.append({"pick": pick, "color": color, "dash": T.SLOT_DASHES[i], "res": res, "settled": settled,
                              "worst": worst, "nominal": nominal})
 
-    fig = charts.robustness_figure(series, metric)
-    if metric in ("fitness", "iae", "overshoot"):
-        fig.update_yaxes(type="log", dtick="D2")
+    fig = charts.robustness_figure(series, metric, what=what, log_y=metric in ("fitness", "iae"))
     T.show(fig, key="rob_fig")
 
     T.stat_tiles([(e["pick"], f"{e['settled']}/{len(factors)}",
