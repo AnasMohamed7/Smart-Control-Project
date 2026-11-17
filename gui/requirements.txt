@@ -1,0 +1,5 @@
+# Presentation GUI only — the core project still needs just control/numpy/matplotlib.
+-r ../requirements.txt
+streamlit>=1.50
+plotly>=6.0
+pandas>=2.2
