@@ -107,58 +107,6 @@ def calculate_scalar_fitness(
     return float(cost) if math.isfinite(cost) else float(penalty_value)
 
 
-def _create_fast_ss_simulator(plant, dt: float, t_end: float, ref: float = 1.0, u_limit: float = 50.0):
-    """Pre-compute discrete state-space matrices for ultra-fast simulation."""
-    import control
-    from scipy import signal as sig
-
-    # Convert plant to discrete state-space
-    if isinstance(plant, control.TransferFunction):
-        num = plant.num[0][0]
-        den = plant.den[0][0]
-        A, B, C, D = sig.tf2ss(num, den)
-    elif hasattr(plant, "A") and hasattr(plant, "B"):
-        A, B, C, D = plant.A, plant.B, plant.C, plant.D
-    else:
-        raise ValueError(f"Unsupported plant type: {type(plant)}")
-
-    Ad, Bd, Cd, Dd, _ = sig.cont2discrete((A, B, C, D), dt, method="zoh")
-    Ad = np.asarray(Ad, dtype=float)
-    Bd = np.asarray(Bd, dtype=float).ravel()
-    Cd = np.asarray(Cd, dtype=float).ravel()
-    n_states = Ad.shape[0]
-
-    n_steps = int(round(t_end / dt))
-    t_arr = np.linspace(0.0, t_end, n_steps)
-
-    def simulate(controller) -> Optional[SimulationResult]:
-        controller.reset()
-        x = np.zeros(n_states, dtype=float)
-        y_arr = np.empty(n_steps, dtype=float)
-        u_arr = np.empty(n_steps, dtype=float)
-
-        for k in range(n_steps):
-            y = float(Cd @ x)
-
-            # Early exit if system becomes unstable or produces non-finite values
-            if abs(y) > 100.0 or not math.isfinite(y):
-                return None
-
-            e = ref - y
-            u = float(controller.compute(e, dt))
-            if not math.isfinite(u):
-                return None
-            u = max(-u_limit, min(u_limit, u))
-
-            x = Ad @ x + Bd * u
-            y_arr[k] = y
-            u_arr[k] = u
-
-        return SimulationResult(time=t_arr, reference=ref, output=y_arr, control_signal=u_arr)
-
-    return simulate, t_arr
-
-
 def build_objective(
     controller: Any,
     plant: Any,
@@ -200,21 +148,16 @@ def build_objective(
     if simulation_config:
         sim_cfg.update(simulation_config)
 
-    dt = float(sim_cfg.get("time_step", getattr(cfg, "DT", 0.01)))
     t_end = float(sim_cfg.get("time_end", getattr(cfg, "T_END", 20.0)))
-    ref = float(sim_cfg.get("reference_value", getattr(cfg, "REFERENCE", 1.0)))
 
-    # Set up simulator: use user-provided, or check plants.simulation, or use fast built-in
+    # Use the project's single closed-loop simulation implementation. Do not
+    # probe it by running an extra simulation here: the optimizer will call the
+    # objective for its first candidate, and the runner supplies this callable
+    # explicitly when it needs to retain the final best response.
     active_simulator = simulator
     if active_simulator is None:
-        try:
-            from smart_control.plants.simulation import simulate_closed_loop
-            # Test if implemented
-            simulate_closed_loop(plant, controller, sim_cfg)
-            active_simulator = lambda ctrl: simulate_closed_loop(plant, ctrl, sim_cfg)
-        except (NotImplementedError, Exception):
-            # Use pre-computed discrete state-space simulator
-            active_simulator, _ = _create_fast_ss_simulator(plant, dt, t_end, ref)
+        from smart_control.plants.simulation import simulate_closed_loop
+        active_simulator = lambda ctrl: simulate_closed_loop(plant, ctrl, sim_cfg)
 
     weights = _get_active_weights(objective_config)
     penalty_val = float(weights.get("penalty", DEFAULT_PENALTY))

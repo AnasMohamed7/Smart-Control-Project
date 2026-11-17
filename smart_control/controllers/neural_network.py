@@ -62,9 +62,13 @@ class NeuralNetworkController(BaseController):
     # ------------------------------------------------------------------
 
     def reset(self):
-        """Reset controller state and re-initialise weights."""
+        """Reset dynamic state without changing the optimized parameters.
+
+        The simulator calls reset() before every candidate evaluation. Reinitialising
+        weights here would silently discard the candidate supplied by the optimizer.
+        Weights are initialized once in __init__ and changed only by set_parameters().
+        """
         self.prev_error = 0.0
-        self._init_weights()
 
     def set_parameters(self, parameters):
         """Decode a flat parameter vector and store W1, b1, W2, b2."""

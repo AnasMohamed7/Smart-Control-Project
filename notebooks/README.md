@@ -1,19 +1,18 @@
-# Colab notebook outline
+# Google Colab notebook
 
-Create the final executable notebook using this order:
+The executable notebook is `Smart_Control_Project.ipynb`.
 
-1. Project title, team members, and brief summary.
-2. Imports (only permitted third-party libraries: `control`, `numpy`, `matplotlib`).
-3. Configuration and agreed plant models.
-4. Controller implementations.
-5. Optimization algorithm implementations.
-6. Performance metrics and objective function.
-7. Unit/sanity checks for each component.
-8. Experiment matrix execution.
-9. Comparison tables.
-10. Step-response plots.
-11. Convergence curves.
-12. Best combinations and discussion.
-13. Total execution-time measurement.
+It is designed to:
 
-The notebook is not generated as an executable implementation in this scaffold.
+1. Install the permitted dependencies (`control`, `numpy`, `matplotlib`).
+2. Upload and extract the final project ZIP.
+3. Import the maintained source modules (it does not duplicate the code in cells).
+4. Display the active configuration and objective weights.
+5. Run the required 48-experiment matrix.
+6. Optionally run GP optimizer on GPController for three additional plant cases.
+7. Download the CSV results and plots as a ZIP file.
+
+The default entry point uses a small evaluation budget to respect the runtime
+constraint. Record the actual execution time in the final Colab environment.
+The quick mode is for smoke testing only, and the default budget is still a
+limited search—not proof that every optimizer converged.

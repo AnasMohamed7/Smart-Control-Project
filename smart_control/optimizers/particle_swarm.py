@@ -1,203 +1,136 @@
-"""Particle Swarm Optimization (PSO) implementation.
+"""Particle Swarm Optimization (PSO), implemented from scratch.
 
-Implements the standard velocity-position PSO with:
-- Linearly decaying inertia weight (w_max → 0.4) for better convergence
-- Cognitive (personal best) and social (global best) acceleration terms
-- Velocity clamping and position clipping to enforce bounds
-
-Reference:
-    Kennedy, J., & Eberhart, R. (1995). Particle swarm optimization.
-    Proceedings of ICNN'95 - International Conference on Neural Networks.
+Uses the standard velocity/position update with a linearly decreasing inertia
+weight, cognitive and social terms, and velocity clamping. It follows the same
+BaseOptimizer contract as GA, DE, SA, and GP.
 """
+from __future__ import annotations
+
+import math
 
 import numpy as np
 
-from smart_control.optimizers.base import BaseOptimizer
+from smart_control.optimizers.base import BaseOptimizer, CountedObjective
 from smart_control.types import OptimizationResult
 
-# ---------------------------------------------------------------------------
-# Default PSO hyper-parameters (used when cfg.PSO_SETTINGS is unavailable)
-# ---------------------------------------------------------------------------
+
 _DEFAULT_PSO_SETTINGS = {
     "population_size": 30,
     "max_iterations": 100,
-    "inertia_weight": 0.7,   # w_max; decays linearly to 0.4
-    "cognitive_coeff": 1.5,  # c1
-    "social_coeff": 1.5,     # c2
-    "v_max_ratio": 0.2,      # v_max = v_max_ratio * (upper - lower)
+    "inertia_weight": 0.7,
+    "cognitive_coeff": 1.5,
+    "social_coeff": 1.5,
+    "v_max_ratio": 0.2,
     "random_seed": 42,
 }
 
 
 def _load_cfg_defaults() -> dict:
-    """Return PSO_SETTINGS from config, falling back to built-in defaults."""
     try:
-        import smart_control.config as cfg  # noqa: PLC0415
+        import smart_control.config as cfg
         return dict(getattr(cfg, "PSO_SETTINGS", _DEFAULT_PSO_SETTINGS))
-    except Exception:  # pragma: no cover
+    except Exception:  # pragma: no cover - config is part of the project
         return dict(_DEFAULT_PSO_SETTINGS)
 
 
 class ParticleSwarmOptimization(BaseOptimizer):
-    """Particle Swarm Optimization minimiser.
+    """Minimize a bounded scalar objective using particle swarm optimization."""
 
-    Parameters
-    ----------
-    settings : dict, optional
-        Override specific PSO hyper-parameters. Any key present here takes
-        precedence over the project-wide ``cfg.PSO_SETTINGS`` defaults.
-        Recognised keys: population_size, max_iterations, inertia_weight,
-        cognitive_coeff, social_coeff, v_max_ratio, random_seed.
-    """
+    name = "PSO"
 
     def __init__(self, settings: dict | None = None) -> None:
-        self._instance_settings: dict = dict(settings) if settings else {}
+        super().__init__(settings=settings)
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def default_settings(self) -> dict:
+        settings = dict(_DEFAULT_PSO_SETTINGS)
+        settings.update(_load_cfg_defaults())
+        return settings
 
-    def optimize(
-        self,
-        objective_function,
-        bounds,
-        settings: dict | None = None,
-    ) -> OptimizationResult:
-        """Run PSO and return the best solution found.
+    def optimize(self, objective_function, bounds, settings: dict | None = None) -> OptimizationResult:
+        merged = self.resolve_settings(settings)
+        lower_list, upper_list = self.validate_bounds(bounds)
+        lower = np.asarray(lower_list, dtype=float)
+        upper = np.asarray(upper_list, dtype=float)
+        span = upper - lower
 
-        Parameters
-        ----------
-        objective_function : callable
-            Scalar function to *minimise*; signature ``f(x) -> float``
-            where *x* is a sequence of floats.
-        bounds : Sequence[Tuple[float, float]]
-            Per-dimension ``(lower, upper)`` box constraints.
-        settings : dict, optional
-            Run-time overrides. Merged on top of instance-level settings,
-            which themselves override ``cfg.PSO_SETTINGS`` defaults.
+        n_particles = int(merged["population_size"])
+        max_iterations = int(merged["max_iterations"])
+        w_max = float(merged["inertia_weight"])
+        c1 = float(merged["cognitive_coeff"])
+        c2 = float(merged["social_coeff"])
+        v_max_ratio = float(merged["v_max_ratio"])
+        seed = merged.get("random_seed", 42)
 
-        Returns
-        -------
-        OptimizationResult
-        """
-        # ----------------------------------------------------------------
-        # 1. Merge settings: cfg defaults ← instance settings ← call settings
-        # ----------------------------------------------------------------
-        merged = _load_cfg_defaults()
-        merged.update(self._instance_settings)
-        if settings:
-            merged.update(settings)
+        if n_particles < 2:
+            raise ValueError("population_size must be at least 2")
+        if max_iterations < 0:
+            raise ValueError("max_iterations must be non-negative")
+        if not all(math.isfinite(v) for v in (w_max, c1, c2, v_max_ratio)):
+            raise ValueError("PSO coefficients must be finite")
+        if v_max_ratio < 0:
+            raise ValueError("v_max_ratio must be non-negative")
 
-        population_size  = int(merged["population_size"])
-        max_iterations   = int(merged["max_iterations"])
-        w_max            = float(merged["inertia_weight"])
-        c1               = float(merged["cognitive_coeff"])
-        c2               = float(merged["social_coeff"])
-        v_max_ratio      = float(merged["v_max_ratio"])
-        random_seed      = merged["random_seed"]
+        # A local generator avoids changing NumPy's global random state.
+        rng = np.random.default_rng(seed)
+        objective = CountedObjective(objective_function)
+        dimensions = len(lower)
+        v_max = v_max_ratio * span
 
-        # ----------------------------------------------------------------
-        # 2. Initialise RNG and problem geometry
-        # ----------------------------------------------------------------
-        np.random.seed(random_seed)
+        positions = lower + rng.random((n_particles, dimensions)) * span
+        velocities = rng.uniform(-1.0, 1.0, size=(n_particles, dimensions)) * v_max
+        # Fixed dimensions (lower == upper) remain fixed with zero velocity.
+        velocities[:, span == 0.0] = 0.0
 
-        n_particles = population_size
-        n_dims      = len(bounds)
+        fitness = np.asarray([objective(row) for row in positions], dtype=float)
+        personal_best_positions = positions.copy()
+        personal_best_fitness = fitness.copy()
+        best_index = int(np.argmin(personal_best_fitness))
+        global_best_position = personal_best_positions[best_index].copy()
+        global_best_fitness = float(personal_best_fitness[best_index])
 
-        lower = np.array([b[0] for b in bounds], dtype=float)
-        upper = np.array([b[1] for b in bounds], dtype=float)
-
-        v_max = v_max_ratio * (upper - lower)   # shape (n_dims,)
-
-        # ----------------------------------------------------------------
-        # 3. Initialise swarm
-        # ----------------------------------------------------------------
-        positions  = np.random.uniform(lower, upper, (n_particles, n_dims))
-        velocities = np.random.uniform(-v_max, v_max, (n_particles, n_dims))
-
-        # Evaluate initial fitness
-        fitness = np.array(
-            [float(objective_function(positions[i])) for i in range(n_particles)]
-        )
-
-        pbest_positions = positions.copy()
-        pbest_fitness   = fitness.copy()
-
-        best_idx       = int(np.argmin(pbest_fitness))
-        gbest_position = pbest_positions[best_idx].copy()
-        gbest_fitness  = float(pbest_fitness[best_idx])
-
-        convergence_history: list[float] = []
-
-        # ----------------------------------------------------------------
-        # 4. Main PSO loop
-        # ----------------------------------------------------------------
+        history: list[float] = []
         for iteration in range(max_iterations):
-            # Linearly decaying inertia: w_max → 0.4
-            w = w_max - (w_max - 0.4) * iteration / max_iterations
+            # Decay from w_max to 0.4 over the configured iterations.
+            fraction = iteration / max(1, max_iterations - 1)
+            inertia = w_max + (0.4 - w_max) * fraction
 
-            # Sample stochastic coefficients once per iteration (vectorised)
-            r1 = np.random.uniform(0.0, 1.0, (n_particles, n_dims))
-            r2 = np.random.uniform(0.0, 1.0, (n_particles, n_dims))
-
-            # --- Velocity update (PSO equation) ---
-            cognitive = c1 * r1 * (pbest_positions - positions)
-            social    = c2 * r2 * (gbest_position  - positions)
-            velocities = w * velocities + cognitive + social
-
-            # Clamp velocity
+            r1 = rng.random((n_particles, dimensions))
+            r2 = rng.random((n_particles, dimensions))
+            cognitive = c1 * r1 * (personal_best_positions - positions)
+            social = c2 * r2 * (global_best_position - positions)
+            velocities = inertia * velocities + cognitive + social
             velocities = np.clip(velocities, -v_max, v_max)
+            positions = np.clip(positions + velocities, lower, upper)
+            positions[:, span == 0.0] = lower[span == 0.0]
 
-            # --- Position update ---
-            positions = positions + velocities
+            fitness = np.asarray([objective(row) for row in positions], dtype=float)
+            improved = fitness < personal_best_fitness
+            personal_best_positions[improved] = positions[improved]
+            personal_best_fitness[improved] = fitness[improved]
 
-            # Clip positions to bounds
-            positions = np.clip(positions, lower, upper)
+            best_index = int(np.argmin(personal_best_fitness))
+            if personal_best_fitness[best_index] < global_best_fitness:
+                global_best_fitness = float(personal_best_fitness[best_index])
+                global_best_position = personal_best_positions[best_index].copy()
+            history.append(global_best_fitness)
 
-            # --- Evaluate fitness ---
-            fitness = np.array(
-                [float(objective_function(positions[i])) for i in range(n_particles)]
-            )
-
-            # --- Update personal bests ---
-            improved = fitness < pbest_fitness
-            pbest_positions[improved] = positions[improved]
-            pbest_fitness[improved]   = fitness[improved]
-
-            # --- Update global best ---
-            best_idx = int(np.argmin(pbest_fitness))
-            if pbest_fitness[best_idx] < gbest_fitness:
-                gbest_fitness  = float(pbest_fitness[best_idx])
-                gbest_position = pbest_positions[best_idx].copy()
-
-            convergence_history.append(gbest_fitness)
-
-        # ----------------------------------------------------------------
-        # 5. Return result
-        # ----------------------------------------------------------------
-        return OptimizationResult(
-            best_solution=gbest_position.tolist(),
-            best_fitness=float(gbest_fitness),
-            convergence_history=convergence_history,
-            metadata={
-                "iterations_run": max_iterations,
-                "n_particles": n_particles,
-                "algorithm": "PSO",
-            },
+        return self.make_result(
+            global_best_position,
+            global_best_fitness,
+            history,
+            algorithm=self.name,
+            iterations_run=len(history),
+            n_evaluations=objective.n_calls,
+            population_size=n_particles,
+            random_seed=seed,
         )
 
 
-# ---------------------------------------------------------------------------
-# Standalone smoke-test
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     def sphere(x):
-        """Sphere function: global minimum 0 at origin."""
-        return sum(xi ** 2 for xi in x)
+        return float(np.sum(np.asarray(x, dtype=float) ** 2))
 
-    bounds = [(-5, 5)] * 5  # 5-dimensional
-    pso = ParticleSwarmOptimization()
-    result = pso.optimize(sphere, bounds)
-    print(f"Best solution: {result.best_solution}")
-    print(f"Best fitness: {result.best_fitness:.6f}")   # should be close to 0
-    print(f"Convergence history length: {len(result.convergence_history)}")
+    result = ParticleSwarmOptimization().optimize(sphere, [(-5, 5)] * 5)
+    print("Best solution:", result.best_solution)
+    print("Best fitness:", result.best_fitness)
+    print("Evaluations:", result.metadata["n_evaluations"])
