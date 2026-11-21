@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 
 
 def main() -> None:
-    import streamlit as st
+    import streamlit as st # type: ignore
 
     st.set_page_config(page_title="Smart Control · Presentation", page_icon="🎛️", layout="wide",
                        initial_sidebar_state="expanded")
